@@ -16,14 +16,8 @@ By default:
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from collections import Counter
-
-
-LINE_RE = re.compile(
-    r"^\s*(?P<time>[0-9]+(?:\.[0-9]+)?)\s*:?\s+(?P<event>\S+?)\s*:?\s+(?P<addr>[0-9a-fA-F]+)\s*$"
-)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +33,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-bucket-samples", type=int, default=1000,
                    help="Ignore buckets with < this many samples when choosing window (filters tiny outliers)")
     p.add_argument("--max-lines", type=int, default=200_000, help="Stop after reading this many matching lines")
+    p.add_argument(
+        "--keep-kernel",
+        action="store_true",
+        help="Keep kernel-space virtual addresses (>= 0x8000...). Default is to drop them to avoid huge address spans.",
+    )
     return p.parse_args()
 
 
@@ -46,21 +45,36 @@ def main() -> int:
     args = parse_args()
     bucket_shift = int(args.bucket_bits)
     max_lines = int(args.max_lines)
+    event_b = args.event.encode("ascii", "ignore")
+    drop_kernel = not bool(args.keep_kernel)
 
     counts: Counter[int] = Counter()
     mins: dict[int, int] = {}
     maxs: dict[int, int] = {}
 
     n = 0
-    for line in sys.stdin:
-        m = LINE_RE.match(line)
-        if not m:
+    # Fast parsing: perf script -F time,event,addr usually splits into:
+    #   <time>: <event>: <addr>
+    # We only care about event + addr, so avoid regex for speed.
+    for line in sys.stdin.buffer:
+        parts = line.split()
+        if len(parts) < 3:
             continue
-        ev = m.group("event").rstrip(":")
-        if ev != args.event:
+        ev = parts[-2].rstrip(b":")
+        if ev != event_b:
             continue
-        a = int(m.group("addr"), 16)
+        addr_tok = parts[-1]
+        if addr_tok == b"0" or addr_tok == b"0x0":
+            continue
+        try:
+            a = int(addr_tok, 16)
+        except ValueError:
+            continue
         if a == 0:
+            continue
+        # Filter kernel virtual addresses by default (prevents massive bucket ranges
+        # if any kernel sample slips in).
+        if drop_kernel and a >= 0x8000_0000_0000_0000:
             continue
         b = a >> bucket_shift
         counts[b] += 1
@@ -103,21 +117,35 @@ def main() -> int:
         best_s = max(b_min, min(best_s, b_max - w + 1))
         best_sum = sum(counts.get(b, 0) for b in range(best_s, best_s + w))
     else:
-        # Search best contiguous window [s, s+w)
-        best_s = b_min
+        # Search best contiguous window [s, s+w) without iterating over the entire
+        # [b_min, b_max] span (which can be enormous if there are sparse outliers).
+        #
+        # Key observation: the window sum only changes when the window boundary
+        # crosses a bucket that has samples. So it suffices to consider candidate
+        # starts derived from observed buckets.
+        keys = sorted(counts.keys())
+        cand: set[int] = set()
+        for b in keys:
+            cand.add(b)
+            cand.add(b - w + 1)
+        # clamp candidates into feasible range
+        lo = b_min
+        hi = b_max - w + 1
+        if hi < lo:
+            lo = hi = b_min
+        cands = sorted(s for s in cand if lo <= s <= hi)
+        if not cands:
+            cands = [max(lo, min(b_min, hi))]
+
+        best_s = cands[0]
         best_sum = -1
-        # Sliding window over integer bucket indices (missing buckets count as 0)
-        current = 0
-        # initialize window at b_min
-        for b in range(b_min, b_min + w):
-            current += counts.get(b, 0)
-        best_sum = current
-        best_s = b_min
-        for s in range(b_min + 1, b_max - w + 2):
-            current -= counts.get(s - 1, 0)
-            current += counts.get(s + w - 1, 0)
-            if current > best_sum:
-                best_sum = current
+        for s in cands:
+            # w is small (e.g., 12) so direct dict gets are fast.
+            ssum = 0
+            for off in range(w):
+                ssum += counts.get(s + off, 0)
+            if ssum > best_sum:
+                best_sum = ssum
                 best_s = s
 
     start_addr = best_s << bucket_shift

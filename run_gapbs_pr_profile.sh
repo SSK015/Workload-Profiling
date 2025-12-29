@@ -1,11 +1,18 @@
 #!/bin/bash
+
+export SCRIPT_LIB_DIR="/mnt/nfs/xiayanwen/research/demos/scripts"
+source ${SCRIPT_LIB_DIR}/password_lib.sh
+
+define_user_password
+
+export SUDO_PASS=$USER_PASSWORD
+
 set -euo pipefail
 
-cd "$(dirname "$0")"
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT_DIR"
 
-echo -n "请输入 sudo 密码(可直接回车跳过sysctl设置): "
-read -s SUDO_PASS || true
-echo ""
+echo "SUDO_PASS: $SUDO_PASS"
 
 # ===== Config (override via env) =====
 GAPBS_DIR=${GAPBS_DIR:-"/home/xiayanwen/app-case-studies/memtis/memtis-userspace/bench_dir/gapbs"}
@@ -31,7 +38,7 @@ WINDOW_GB=${WINDOW_GB:-12}       # used when ADDR_MODE=window and /proc maps can
 WINDOW_STRATEGY=${WINDOW_STRATEGY:-around} # best|min|max|around (around = center around dominant; avoids low-address outliers)
 PLOT_Y_OFFSET=${PLOT_Y_OFFSET:-1} # 1 => plot addr-min offset (recommended); 0 => absolute virtual addr
 
-OUT_DIR=${OUT_DIR:-"/home/xiayanwen/app-case-studies/memtis_ebpf_example/perf_results/gapbs_pr_long"}
+OUT_DIR=${OUT_DIR:-"$ROOT_DIR/perf_results/gapbs_pr_long_new"}
 TITLE=${TITLE:-"GAPBS PageRank (twitter.sg)"}
 
 mkdir -p "$OUT_DIR"
@@ -132,30 +139,33 @@ else
     -- sleep "$PERF_DURATION" 2>&1 | tail -n 5 || true
 fi
 
-echo "=== Plot heatmap (streaming) ==="
-cd /home/xiayanwen/app-case-studies/memtis_ebpf_example
+echo "=== Extract points (time,event,addr) ==="
+POINTS_TXT="$OUT_DIR/pr_points.txt"
+rm -f "$POINTS_TXT" 2>/dev/null || true
+"$PERF_BIN" script -i "$PERF_DATA" -F time,event,addr 2>/dev/null > "$POINTS_TXT"
+
+echo "=== Plot heatmap ==="
+cd "$ROOT_DIR"
 
 if [ -z "$ADDR_MIN" ] || [ -z "$ADDR_MAX" ]; then
-  # Infer dominant 1GB bucket from first 200k samples
+  # Infer dominant 1GB bucket / best window from the first 200k matching samples
   read -r ADDR_MIN ADDR_MAX _CNT < <(
-    "$PERF_BIN" script -i "$PERF_DATA" -F time,event,addr 2>/dev/null | \
-      python3 ./infer_addr_range.py --mode "$ADDR_MODE" --window-gb "$WINDOW_GB" --window-strategy "$WINDOW_STRATEGY" --max-lines 200000
+    python3 ./infer_addr_range.py --mode "$ADDR_MODE" --window-gb "$WINDOW_GB" --window-strategy "$WINDOW_STRATEGY" --max-lines 200000 < "$POINTS_TXT"
   )
   echo "Inferred addr range ($ADDR_MODE): $ADDR_MIN - $ADDR_MAX"
 fi
 
-PLOT_ARGS=(--input - --output "$OUT_DIR/virt_heatmap.png" --title "$TITLE" --addr-min "$ADDR_MIN" --addr-max "$ADDR_MAX" --max-points "$MAX_POINTS")
+PLOT_ARGS=(--input "$POINTS_TXT" --output "$OUT_DIR/virt_heatmap.png" --title "$TITLE" --addr-min "$ADDR_MIN" --addr-max "$ADDR_MAX" --max-points "$MAX_POINTS")
 if [ "$PLOT_Y_OFFSET" = "1" ]; then
   PLOT_ARGS+=(--y-offset --ylabel "Virtual address (offset)")
 else
   PLOT_ARGS+=(--ylabel "Virtual address")
 fi
-"$PERF_BIN" script -i "$PERF_DATA" -F time,event,addr 2>/dev/null | python3 ./plot_phys_addr.py "${PLOT_ARGS[@]}"
+python3 ./plot_phys_addr.py "${PLOT_ARGS[@]}"
 
-echo "=== Plot hot persistence (streaming) ==="
-"$PERF_BIN" script -i "$PERF_DATA" -F time,event,addr 2>/dev/null | \
-  python3 ./hot_persistence.py \
-    --input - \
+echo "=== Plot hot persistence ==="
+python3 ./hot_persistence.py \
+    --input "$POINTS_TXT" \
     --output "$OUT_DIR/hot_persistence.png" \
     --title "${TITLE} hot persistence" \
     --addr-min "$ADDR_MIN" --addr-max "$ADDR_MAX" \
@@ -166,6 +176,7 @@ echo "=== Plot hot persistence (streaming) ==="
 echo ""
 echo "Done:"
 echo "  perf.data:         $PERF_DATA"
+echo "  points:            $POINTS_TXT"
 echo "  heatmap:           $OUT_DIR/virt_heatmap.png"
 echo "  hot persistence:   $OUT_DIR/hot_persistence.png"
 echo "  pr log:            $OUT_DIR/pr.log"
