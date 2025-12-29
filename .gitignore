@@ -39,3 +39,18 @@
 
 # debug information files
 *.dwo
+
+# Build artifacts
+zipf_bench
+*.o
+
+# Local perf outputs / scratch
+perf_results/
+perf.data
+perf_data.data
+test*.data*
+*.data
+
+# Python cache
+__pycache__/
+*.pyc
