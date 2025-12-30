@@ -65,6 +65,12 @@ pick **baseline hot pages** in an early time window, then measure how many of th
   - `BIN_SEC=10.0` (time bin size)
   - `SAMPLING_CORES=1`, `CPU_START=0` (same meaning as above)
 
+Plot styling:
+
+- By default, `hot_persistence.py` uses **matplotlib**.
+- To opt-in to your `hachimiku` plotting library:
+  - `python3 hot_persistence.py ... --plot-backend hachimiku --hachimiku-dir /mnt/nfs/xiayanwen/research/demos/plot/hachimiku`
+
 ### GAPBS PageRank (twitter.sg) end-to-end profiling
 
 If you have GAPBS available at `memtis/memtis-userspace/bench_dir/gapbs`, you can do an end-to-end run (start `pr`, record PEBS addr samples, generate both plots):
@@ -145,5 +151,43 @@ To plot absolute virtual addresses (not offset):
 ```bash
 PLOT_Y_OFFSET=0 ADDR_MODE=window WINDOW_GB=12 ./run_gapbs_pr_profile.sh
 ```
+
+### GAPBS BFS (twitter.sg) end-to-end profiling
+
+Run BFS, record PEBS data-address samples, and generate both plots:
+
+```bash
+./run_gapbs_bfs_profile.sh
+```
+
+Common knobs:
+
+- `GRAPH=benchmark/graphs/twitter.sg` and `BFS_ARGS="-f ${GRAPH} -n64"` (override workload)
+- `OMP_NUM_THREADS=32` (control OpenMP threads)
+- `PERF_DURATION=60`, `SAMPLE_PERIOD=2000`, or `PERF_UNTIL_EXIT=1`
+- Address range selection for plotting: `ADDR_MODE=window WINDOW_GB=12 WINDOW_STRATEGY=best`
+
+
+### GAPBS SSSP (twitter.sg) end-to-end profiling
+
+Run SSSP (delta-stepping), record PEBS data-address samples, and generate both plots:
+
+```bash
+./run_gapbs_sssp_profile.sh
+```
+
+Common knobs:
+
+- `GRAPH=benchmark/graphs/twitter.sg`
+- `SSSP_ARGS="-f ${GRAPH} -n16 -d1 -l"`
+  - `-n`: number of trials (**each trial picks a new random source** unless you force `-r`)
+  - `-r <node>`: fix the source (disables per-trial source randomness)
+  - `-d <delta>`: delta-stepping bucket width (graph-dependent)
+  - `-l`: enable per-trial step logging (useful to correlate phases with the heatmap time axis)
+- `OMP_NUM_THREADS=32`
+- `PERF_DURATION=120`, `SAMPLE_PERIOD=2000`, or `PERF_UNTIL_EXIT=1`
+- Address range selection for plotting: `ADDR_MODE=window WINDOW_GB=12 WINDOW_STRATEGY=best`
+
+Note: `sssp` requires a **weighted** graph. If you pass an unweighted serialized `.sg` (like `twitter.sg`), the script will automatically convert it once to an edge list (`.el`) under `perf_results/gapbs_sssp/` and let GAPBS insert weights during graph build.
 
 
