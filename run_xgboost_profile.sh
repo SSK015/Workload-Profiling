@@ -1,50 +1,56 @@
 #!/bin/bash
+#
+# Profile the Python XGBoost WSS benchmark using perf PEBS (same pipeline as GAPBS scripts).
+#
+# Usage example:
+#   OUT_DIR=./perf_results/xgb_wss20 PERF_DURATION=60 SAMPLE_PERIOD=1000 HEATMAP_VMAX_PCT=99.0 ./run_xgboost_profile.sh
+#
 
-export SCRIPT_LIB_DIR="/mnt/nfs/xiayanwen/research/demos/scripts"
-source ${SCRIPT_LIB_DIR}/password_lib.sh
-
-define_user_password
-
-export SUDO_PASS=$USER_PASSWORD
+# Optional: load sudo password helper if available (used for sysctl tuning)
+SCRIPT_LIB_DIR="${SCRIPT_LIB_DIR:-/mnt/nfs/xiayanwen/research/demos/scripts}"
+if [ -f "${SCRIPT_LIB_DIR}/password_lib.sh" ]; then
+  # shellcheck disable=SC1090
+  source "${SCRIPT_LIB_DIR}/password_lib.sh"
+  define_user_password
+  export SUDO_PASS="${USER_PASSWORD:-}"
+fi
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-echo "SUDO_PASS: $SUDO_PASS"
-
 # ===== Config (override via env) =====
-GAPBS_DIR=${GAPBS_DIR:-"/home/xiayanwen/app-case-studies/memtis/memtis-userspace/bench_dir/gapbs"}
-GRAPH=${GRAPH:-"benchmark/graphs/twitter.sg"}
-
-# Default command you gave
-PR_ARGS=${PR_ARGS:-"-f ${GRAPH} -i1000 -t1e-4 -n20"}
+BENCH_DIR=${BENCH_DIR:-"/home/xiayanwen/app-case-studies/xgboost_bench"}
+PYTHON_BIN=${PYTHON_BIN:-"python3"}
+BENCH_ARGS=${BENCH_ARGS:-"--target-gib 20 --n-features 4096 --rounds 10 --tree-method hist --max-bin 64 --touch"}
 
 WARMUP_SEC=${WARMUP_SEC:-5}
-
-# Profile longer + lower sampling rate by default
 PERF_DURATION=${PERF_DURATION:-60}
-SAMPLE_PERIOD=${SAMPLE_PERIOD:-2000}  # larger => lower samples/sec
-PERF_UNTIL_EXIT=${PERF_UNTIL_EXIT:-0}  # 1 => keep sampling until pr exits (ignores PERF_DURATION)
+SAMPLE_PERIOD=${SAMPLE_PERIOD:-1000}
+PERF_UNTIL_EXIT=${PERF_UNTIL_EXIT:-1} # for Python workloads, usually better to sample until exit
 
 # Analysis params
 MAX_POINTS=${MAX_POINTS:-2000000}
 HEATMAP_DPI=${HEATMAP_DPI:-300}
-HEATMAP_GRIDSIZE=${HEATMAP_GRIDSIZE:-500}
-HEATMAP_FIGSIZE=${HEATMAP_FIGSIZE:-"10,6"}
+HEATMAP_GRIDSIZE=${HEATMAP_GRIDSIZE:-700}
+HEATMAP_FIGSIZE=${HEATMAP_FIGSIZE:-"12,7"}
 HEATMAP_COLOR_SCALE=${HEATMAP_COLOR_SCALE:-log}      # log|linear
-HEATMAP_VMAX_PCT=${HEATMAP_VMAX_PCT:-""}             # e.g. 99.0 (empty=auto)
+HEATMAP_VMAX_PCT=${HEATMAP_VMAX_PCT:-99.0}           # cap log scale for very dense runs
+
 PERSIST_TOPK=${PERSIST_TOPK:-2048}
 PERSIST_REF_WINDOW=${PERSIST_REF_WINDOW:-2}
 PERSIST_BIN_SEC=${PERSIST_BIN_SEC:-10}
-ADDR_MODE=${ADDR_MODE:-window}   # dominant | window
-WINDOW_GB=${WINDOW_GB:-12}       # used when ADDR_MODE=window and /proc maps can't find graph mapping
-WINDOW_STRATEGY=${WINDOW_STRATEGY:-around} # best|min|max|around (around = center around dominant; avoids low-address outliers)
-PLOT_Y_OFFSET=${PLOT_Y_OFFSET:-1} # 1 => plot addr-min offset (recommended); 0 => absolute virtual addr
 
-OUT_DIR=${OUT_DIR:-"$ROOT_DIR/perf_results/gapbs_pr_long_new"}
-TITLE=${TITLE:-"GAPBS PageRank (twitter.sg)"}
+# Address window inference (Python has many mappings; use window search)
+ADDR_MODE=${ADDR_MODE:-window}
+WINDOW_GB=${WINDOW_GB:-12}
+WINDOW_STRATEGY=${WINDOW_STRATEGY:-best}
+PLOT_Y_OFFSET=${PLOT_Y_OFFSET:-1}
+USE_PROC_MAPS=${USE_PROC_MAPS:-1} # 1 => prefer largest anon-rw mapping; 0 => always infer a window from samples (useful for "total process" view)
+
+OUT_DIR=${OUT_DIR:-"$ROOT_DIR/perf_results/xgboost_wss"}
+TITLE=${TITLE:-"XGBoost WSS benchmark"}
 
 mkdir -p "$OUT_DIR"
 
@@ -77,37 +83,37 @@ else
   echo "=== Skip sysctl (no sudo password provided) ==="
 fi
 
-echo "=== Start GAPBS PageRank ==="
-cd "$GAPBS_DIR"
-./pr $PR_ARGS >"$OUT_DIR/pr.log" 2>&1 &
-PR_PID=$!
-export PR_PID
-echo "pr pid: $PR_PID"
+echo "=== Start XGBoost benchmark ==="
+cd "$BENCH_DIR"
+
+set +e
+$PYTHON_BIN ./xgb_wss_bench.py $BENCH_ARGS >"$OUT_DIR/bench.log" 2>&1 &
+BENCH_PID=$!
+export BENCH_PID
+set -e
+echo "bench pid: $BENCH_PID"
 
 cleanup() {
-  # only used on signals; don't kill PR on normal exit
-  kill "$PR_PID" 2>/dev/null || true
+  kill "$BENCH_PID" 2>/dev/null || true
 }
 trap cleanup INT TERM
 
 sleep "$WARMUP_SEC"
+if ! kill -0 "$BENCH_PID" 2>/dev/null; then
+  echo "ERROR: benchmark exited before profiling started; see log: $OUT_DIR/bench.log" >&2
+  tail -n 80 "$OUT_DIR/bench.log" >&2 || true
+  exit 1
+fi
 
 echo "=== Determine address filter range ==="
 ADDR_MIN=""
 ADDR_MAX=""
-
-# Prefer mapping of the graph file if it's mmapped
-MAP_RANGE=$(awk -v g="$(basename "$GRAPH")" '$0 ~ g {print $1; exit}' "/proc/$PR_PID/maps" 2>/dev/null || true)
-if [ -n "$MAP_RANGE" ]; then
-  ADDR_MIN="0x${MAP_RANGE%-*}"
-  ADDR_MAX="0x${MAP_RANGE#*-}"
-  echo "Using graph mapping: $ADDR_MIN - $ADDR_MAX"
-else
-  # Fallback: biggest anonymous rw mapping (often where graph/arrays live)
+if [ "$USE_PROC_MAPS" = "1" ]; then
+  # For Python + NumPy, the biggest anonymous RW mapping is usually the giant feature matrix (X) allocation.
   MAP_RANGE=$(
     python3 - <<'PY'
 import re, os
-pid = int(os.environ["PR_PID"])
+pid = int(os.environ["BENCH_PID"])
 best = ""
 best_sz = -1
 with open(f"/proc/{pid}/maps", "r", encoding="utf-8", errors="ignore") as f:
@@ -139,8 +145,10 @@ PY
     ADDR_MAX="0x${MAP_RANGE#*-}"
     echo "Using anon-rw mapping: $ADDR_MIN - $ADDR_MAX"
   else
-    echo "No /proc maps range found; will auto-infer dominant bucket from samples."
+    echo "No /proc maps range found; will infer address window from samples."
   fi
+else
+  echo "USE_PROC_MAPS=0: will infer address window from samples (total-process view)."
 fi
 
 echo "=== perf record (PEBS data addr) ==="
@@ -148,18 +156,17 @@ PERF_DATA="$OUT_DIR/perf.data"
 rm -f "$PERF_DATA" 2>/dev/null || true
 
 if [ "$PERF_UNTIL_EXIT" = "1" ]; then
-  echo "Sampling mode: until pr exits (PERF_UNTIL_EXIT=1)"
+  echo "Sampling mode: until benchmark exits (PERF_UNTIL_EXIT=1)"
   "$PERF_BIN" record \
     -e '{cpu/mem-loads-aux/,cpu/mem-loads/pp}:S' \
     -c "$SAMPLE_PERIOD" \
-    -p "$PR_PID" \
+    -p "$BENCH_PID" \
     -d \
     --no-buildid --no-buildid-cache \
     -o "$PERF_DATA" \
     -- sleep 9999999 >/dev/null 2>&1 &
   PERF_REC_PID=$!
-  # Wait for pr to finish, then stop perf cleanly so it flushes perf.data
-  wait "$PR_PID" 2>/dev/null || true
+  wait "$BENCH_PID" 2>/dev/null || true
   kill -INT "$PERF_REC_PID" 2>/dev/null || true
   wait "$PERF_REC_PID" 2>/dev/null || true
 else
@@ -167,31 +174,41 @@ else
   "$PERF_BIN" record \
     -e '{cpu/mem-loads-aux/,cpu/mem-loads/pp}:S' \
     -c "$SAMPLE_PERIOD" \
-    -p "$PR_PID" \
+    -p "$BENCH_PID" \
     -d \
     --no-buildid --no-buildid-cache \
     -o "$PERF_DATA" \
-    -- sleep "$PERF_DURATION" 2>&1 | tail -n 5 || true
+    -- sleep "$PERF_DURATION" 2>&1 | tail -n 5
+fi
+
+if [ ! -s "$PERF_DATA" ]; then
+  echo "ERROR: perf did not produce perf.data (or it is empty): $PERF_DATA" >&2
+  echo "See log: $OUT_DIR/bench.log" >&2
+  exit 1
 fi
 
 echo "=== Extract points (time,event,addr) ==="
-POINTS_TXT="$OUT_DIR/pr_points.txt"
+cd "$ROOT_DIR"
+POINTS_TXT="$OUT_DIR/points.txt"
 rm -f "$POINTS_TXT" 2>/dev/null || true
 "$PERF_BIN" script -i "$PERF_DATA" -F time,event,addr 2>/dev/null > "$POINTS_TXT"
 
-echo "=== Plot heatmap ==="
-cd "$ROOT_DIR"
-
-if [ -z "$ADDR_MIN" ] || [ -z "$ADDR_MAX" ]; then
-  # Infer dominant 1GB bucket / best window from the first 200k matching samples
-  read -r ADDR_MIN ADDR_MAX _CNT < <(
-    python3 ./infer_addr_range.py --mode "$ADDR_MODE" --window-gb "$WINDOW_GB" --window-strategy "$WINDOW_STRATEGY" --max-lines 200000 < "$POINTS_TXT"
-  )
-  echo "Inferred addr range ($ADDR_MODE): $ADDR_MIN - $ADDR_MAX"
+if [ ! -s "$POINTS_TXT" ]; then
+  echo "ERROR: no samples decoded into points file: $POINTS_TXT" >&2
+  exit 1
 fi
 
+echo "=== Infer address window ==="
+if [ -z "$ADDR_MIN" ] || [ -z "$ADDR_MAX" ]; then
+  read -r ADDR_MIN ADDR_MAX _CNT < <(
+    python3 ./infer_addr_range.py --mode "$ADDR_MODE" --window-gb "$WINDOW_GB" --window-strategy "$WINDOW_STRATEGY" --window-output full --max-lines 200000 < "$POINTS_TXT"
+  )
+  echo "Inferred addr range: $ADDR_MIN - $ADDR_MAX"
+fi
+
+echo "=== Plot heatmap ==="
 PLOT_ARGS=(--input "$POINTS_TXT" --output "$OUT_DIR/virt_heatmap.png" --title "$TITLE" --addr-min "$ADDR_MIN" --addr-max "$ADDR_MAX" --max-points "$MAX_POINTS" --dpi "$HEATMAP_DPI" --gridsize "$HEATMAP_GRIDSIZE" --figsize "$HEATMAP_FIGSIZE" --color-scale "$HEATMAP_COLOR_SCALE")
-if [ -n "$HEATMAP_VMAX_PCT" ]; then
+if [ -n "${HEATMAP_VMAX_PCT:-}" ]; then
   PLOT_ARGS+=(--vmax-percentile "$HEATMAP_VMAX_PCT")
 fi
 if [ "$PLOT_Y_OFFSET" = "1" ]; then
@@ -203,18 +220,20 @@ python3 ./plot_phys_addr.py "${PLOT_ARGS[@]}"
 
 echo "=== Plot hot persistence ==="
 python3 ./hot_persistence.py \
-    --input "$POINTS_TXT" \
-    --output "$OUT_DIR/hot_persistence.png" \
-    --title "${TITLE} hot persistence" \
-    --addr-min "$ADDR_MIN" --addr-max "$ADDR_MAX" \
-    --ref-start 0 --ref-window "$PERSIST_REF_WINDOW" \
-    --topk "$PERSIST_TOPK" \
-    --bin "$PERSIST_BIN_SEC"
+  --input "$POINTS_TXT" \
+  --output "$OUT_DIR/hot_persistence.png" \
+  --title "${TITLE} hot persistence" \
+  --addr-min "$ADDR_MIN" --addr-max "$ADDR_MAX" \
+  --ref-start 0 --ref-window "$PERSIST_REF_WINDOW" \
+  --topk "$PERSIST_TOPK" \
+  --bin "$PERSIST_BIN_SEC"
 
 echo ""
 echo "Done:"
+echo "  log:              $OUT_DIR/bench.log"
 echo "  perf.data:         $PERF_DATA"
 echo "  points:            $POINTS_TXT"
 echo "  heatmap:           $OUT_DIR/virt_heatmap.png"
 echo "  hot persistence:   $OUT_DIR/hot_persistence.png"
-echo "  pr log:            $OUT_DIR/pr.log"
+
+

@@ -23,29 +23,59 @@ make
 Runs `zipf_bench`, records **data virtual addresses** (`addr`) with PEBS, and draws a heatmap (time vs heap-offset).
 
 ```bash
-./run_virt_plot.sh
+./run_zipf_profile.sh
 ```
 
-- **Output**: `perf_results/virt_heatmap.png`
+- **Output**: `perf_results/zipf_*/virt_heatmap.png`
 - **Key knobs (env)**:
   - `SKEW=0.99` (Zipfian) or `SKEW=0.0` (Uniform)
   - `MEM_SIZE_MB=1024`
-  - `SAMPLING_CORES=1` (run `zipf_bench` with N threads pinned to N CPUs)
-  - `CPU_START=0` (pin threads to `CPU_START..CPU_START+SAMPLING_CORES-1`)
+  - `THREADS=1` (run `zipf_bench` with N threads pinned to N CPUs)
+  - `CPU_START=0` (pin threads to `CPU_START..CPU_START+THREADS-1`)
   - `PERF_DURATION=30` (record this many seconds)
   - `PERF_UNTIL_EXIT=1` (optional: record until the workload exits; ignores `PERF_DURATION`)
   - `SAMPLE_PERIOD=50` (smaller => higher sample rate)
   - `PERF_BIN=/usr/local/bin/perf` (optional override)
+
+### Workflow D: Streaming benchmark heatmap (linear array sweeps)
+
+Runs `stream_bench` (a multi-thread “pure streaming” workload that repeatedly sweeps large arrays), records PEBS **data virtual addresses** (`addr`), and draws a heatmap.
+
+```bash
+./run_stream_profile.sh
+```
+
+Common knobs:
+
+- `MEM_SIZE_MB=4096` (total mapping size)
+- `THREADS=32`, `CPU_START=0`
+- `PATTERN=chunk|interleave` (how threads partition the array)
+- `OP=read|write|copy|triad` (STREAM-like kernels)
+- `PHASE_PAGES=0` (set >0 to shift start offset each pass; can produce diagonal structure)
+- `BENCH_DURATION=60`, `PERF_UNTIL_EXIT=1`, `SAMPLE_PERIOD=1000`
+
+Why the heatmap can look “noisy” even for sequential streaming:
+
+- With many threads, the workload is **sequential per-thread**, but **concurrent across the full address range**. A time-vs-address plot aggregates all threads, so you often see a “filled” rectangle rather than a single diagonal.
+- If the array sweep is fast relative to sampling/time binning, you get **aliasing** (samples look scattered).
+
+If you want to *visually* see the “brush” moving across the array, use the scan demo:
+
+```bash
+./run_stream_scan_demo.sh
+```
+
+This demo intentionally scans in **phases** (small moving window + sleep), so the heatmap shows a clear sequential pattern. It is not a peak-bandwidth configuration.
 
 ### Workflow B: Physical-address heatmap
 
 Same idea, but records **physical addresses** (`phys_addr`) using `--phys-data`.
 
 ```bash
-./run_phys_plot.sh
+DO_PHYS=1 ./run_zipf_profile.sh
 ```
 
-- **Output**: `perf_results/phys_heatmap.png`
+- **Output**: `perf_results/zipf_*/phys_heatmap.png`
 
 ### Workflow C: “Still hot after Δt” (hot-page persistence)
 
@@ -53,17 +83,17 @@ Produces a bar chart like your example:
 pick **baseline hot pages** in an early time window, then measure how many of those pages remain in **Top‑K** for later time bins.
 
 ```bash
-./run_hot_persistence.sh
+DO_PERSIST=1 ./run_zipf_profile.sh
 ```
 
-- **Output**: `perf_results/hot_persistence.png`
+- **Output**: `perf_results/zipf_*/hot_persistence.png`
 - **Key knobs (env)**:
   - `BENCH_DURATION=600` (run long enough to see minutes-scale behavior)
   - `PERF_DURATION=120` (or `PERF_UNTIL_EXIT=1`)
   - `REF_START=0.0` and `REF_WINDOW=2.0` (baseline window in seconds)
   - `TOPK=1024`
   - `BIN_SEC=10.0` (time bin size)
-  - `SAMPLING_CORES=1`, `CPU_START=0` (same meaning as above)
+  - `THREADS=1`, `CPU_START=0` (same meaning as above)
 
 Plot styling:
 

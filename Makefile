@@ -2,11 +2,14 @@ CXX ?= g++
 CXXFLAGS ?= -O3 -std=c++17
 LDFLAGS ?= -lpthread
 
-bench_target = zipf_bench
+bench_target = zipf_bench stream_bench
 
 all: $(bench_target)
 
-$(bench_target): zipf_bench.cpp
+zipf_bench: zipf_bench.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+
+stream_bench: stream_bench.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:

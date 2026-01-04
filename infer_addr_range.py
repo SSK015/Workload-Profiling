@@ -32,6 +32,16 @@ def parse_args() -> argparse.Namespace:
                    help="If mode=window: best=maximize samples; min=lowest-address window; max=highest-address window; around=center around dominant bucket")
     p.add_argument("--min-bucket-samples", type=int, default=1000,
                    help="Ignore buckets with < this many samples when choosing window (filters tiny outliers)")
+    p.add_argument(
+        "--window-output",
+        choices=["observed", "full"],
+        default="observed",
+        help=(
+            "When mode=window: "
+            "observed=return min/max of observed samples within the chosen window (default); "
+            "full=return exact window bounds [start, start+window) so the plotted Y span matches WINDOW_GB."
+        ),
+    )
     p.add_argument("--max-lines", type=int, default=200_000, help="Stop after reading this many matching lines")
     p.add_argument(
         "--keep-kernel",
@@ -153,9 +163,13 @@ def main() -> int:
     # Refine min/max using observed samples inside the chosen window
     window_mins = [mins[b] for b in range(best_s, best_s + w) if b in mins]
     window_maxs = [maxs[b] for b in range(best_s, best_s + w) if b in maxs]
-    out_min = min(window_mins) if window_mins else start_addr
-    out_max = max(window_maxs) if window_maxs else (end_addr_excl - 1)
-    print(hex(out_min), hex(out_max), best_sum)
+    if args.window_output == "full":
+        # Return exact window bounds so downstream plots have a consistent axis span.
+        print(hex(start_addr), hex(end_addr_excl), best_sum)
+    else:
+        out_min = min(window_mins) if window_mins else start_addr
+        out_max = max(window_maxs) if window_maxs else (end_addr_excl - 1)
+        print(hex(out_min), hex(out_max), best_sum)
     return 0
 
 

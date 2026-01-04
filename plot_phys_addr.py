@@ -20,6 +20,8 @@ import random
 import sys
 
 import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.colors import LogNorm
 
 
 # perf script -F time,event,addr (or phys_addr) often formats like:
@@ -41,8 +43,31 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--addr-max", default=None, help="Filter: keep addresses < this hex (e.g. 0x7000...)")
     p.add_argument("--y-offset", action="store_true", help="Plot Y as (addr - addr_min) if addr_min is set")
     p.add_argument("--max-points", type=int, default=2_000_000, help="Downsample to at most this many points")
-    p.add_argument("--gridsize", type=int, default=300, help="Hexbin grid size (higher = finer)")
-    p.add_argument("--dpi", type=int, default=180, help="Output DPI")
+    p.add_argument("--gridsize", type=int, default=500, help="Hexbin grid size (higher = finer)")
+    p.add_argument("--dpi", type=int, default=300, help="Output DPI")
+    p.add_argument(
+        "--figsize",
+        default="8,6",
+        help='Figure size in inches as "W,H" (default: 8,6)',
+    )
+    p.add_argument(
+        "--color-scale",
+        choices=["log", "linear"],
+        default="log",
+        help="Color scaling for density (default: log)",
+    )
+    p.add_argument(
+        "--vmax-percentile",
+        type=float,
+        default=None,
+        help="Optional: cap color scale at this percentile of bin counts (e.g. 99.0) to make faint structure visible",
+    )
+    p.add_argument(
+        "--vmax",
+        type=float,
+        default=None,
+        help="Optional: explicit cap for color scale (overrides --vmax-percentile)",
+    )
     return p.parse_args()
 
 
@@ -100,14 +125,19 @@ def main() -> int:
     if args.y_offset and addr_min is not None:
         phys = [p - addr_min for p in phys]
 
-    fig = plt.figure(figsize=(6.2, 4.6), dpi=args.dpi)
+    try:
+        w_str, h_str = str(args.figsize).split(",", 1)
+        fig_w, fig_h = float(w_str), float(h_str)
+    except Exception as e:
+        raise SystemExit(f"Invalid --figsize '{args.figsize}', expected 'W,H' (e.g. 10,6): {e}")
+
+    fig = plt.figure(figsize=(fig_w, fig_h), dpi=args.dpi)
     ax = fig.add_subplot(1, 1, 1)
 
     hb = ax.hexbin(
         times,
         phys,
         gridsize=args.gridsize,
-        bins="log",
         mincnt=1,
         cmap="Blues",
     )
@@ -116,8 +146,39 @@ def main() -> int:
     ax.set_xlabel("Time (sec)")
     ax.set_ylabel(args.ylabel)
 
-    cbar = fig.colorbar(hb, ax=ax)
-    cbar.set_label("log10(samples)")
+    # Force Y axis bounds when the user provided an address window, so the plot
+    # reflects the full requested span (e.g., WINDOW_GB), even if samples only
+    # touch a subset of that window.
+    if addr_min is not None and addr_max is not None:
+        if args.y_offset:
+            ax.set_ylim(0, addr_max - addr_min)
+        else:
+            ax.set_ylim(addr_min, addr_max)
+
+    counts = hb.get_array()
+    if counts.size:
+        if args.vmax is not None:
+            vmax = float(args.vmax)
+        elif args.vmax_percentile is not None:
+            vmax = float(np.percentile(counts, float(args.vmax_percentile)))
+        else:
+            vmax = None
+    else:
+        vmax = None
+
+    if args.color_scale == "log":
+        # LogNorm expects positive values; counts are >= 1 due to mincnt=1.
+        if vmax is not None and vmax >= 1:
+            hb.set_norm(LogNorm(vmin=1, vmax=vmax))
+        else:
+            hb.set_norm(LogNorm(vmin=1))
+        cbar = fig.colorbar(hb, ax=ax)
+        cbar.set_label("samples (log scale)")
+    else:
+        if vmax is not None and vmax > 0:
+            hb.set_clim(0, vmax)
+        cbar = fig.colorbar(hb, ax=ax)
+        cbar.set_label("samples")
 
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
