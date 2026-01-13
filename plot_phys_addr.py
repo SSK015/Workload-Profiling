@@ -42,6 +42,34 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--addr-min", default=None, help="Filter: keep addresses >= this hex (e.g. 0x7000...)")
     p.add_argument("--addr-max", default=None, help="Filter: keep addresses < this hex (e.g. 0x7000...)")
     p.add_argument("--y-offset", action="store_true", help="Plot Y as (addr - addr_min) if addr_min is set")
+    p.add_argument(
+        "--ymin",
+        default=None,
+        help="Optional: force y-axis minimum. In --y-offset mode this is an offset in bytes; otherwise an address. Accepts decimal or hex (0x...).",
+    )
+    p.add_argument(
+        "--ymax",
+        default=None,
+        help="Optional: force y-axis maximum. In --y-offset mode this is an offset in bytes; otherwise an address. Accepts decimal or hex (0x...).",
+    )
+    p.add_argument(
+        "--ymax-gb",
+        type=float,
+        default=None,
+        help="Convenience: force y-axis to [0, N GiB] in --y-offset mode (GiB = 1024^3). Overrides --ymax/--ymin.",
+    )
+    p.add_argument(
+        "--ymin-gb",
+        type=float,
+        default=None,
+        help="Convenience: force y-axis minimum to N GiB in --y-offset mode (GiB = 1024^3). Can be combined with --ymax/--ymax-gb.",
+    )
+    p.add_argument(
+        "--yspan-gb",
+        type=float,
+        default=None,
+        help="Convenience: force y-axis span to N GiB. Useful with --ymin-gb (e.g. ymin=30, span=30 -> [30,60] GiB). GiB = 1024^3.",
+    )
     p.add_argument("--max-points", type=int, default=2_000_000, help="Downsample to at most this many points")
     p.add_argument("--gridsize", type=int, default=500, help="Hexbin grid size (higher = finer)")
     p.add_argument("--dpi", type=int, default=300, help="Output DPI")
@@ -57,6 +85,24 @@ def parse_args() -> argparse.Namespace:
         help="Color scaling for density (default: log)",
     )
     p.add_argument(
+        "--plot",
+        choices=["hexbin", "scatter"],
+        default="hexbin",
+        help="Plot type: hexbin (density) or scatter (raw points). Default: hexbin",
+    )
+    p.add_argument(
+        "--alpha",
+        type=float,
+        default=1.0,
+        help="Point/hex transparency (0..1). For scatter, values like 0.02-0.2 help reduce saturation.",
+    )
+    p.add_argument(
+        "--s",
+        type=float,
+        default=1.0,
+        help="Scatter marker size (only for --plot scatter).",
+    )
+    p.add_argument(
         "--vmax-percentile",
         type=float,
         default=None,
@@ -69,6 +115,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional: explicit cap for color scale (overrides --vmax-percentile)",
     )
     return p.parse_args()
+
+
+def _parse_int_auto(s: str) -> int:
+    s = s.strip().lower()
+    if s.startswith("0x"):
+        return int(s, 16)
+    return int(s, 10)
 
 
 def main() -> int:
@@ -134,13 +187,25 @@ def main() -> int:
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=args.dpi)
     ax = fig.add_subplot(1, 1, 1)
 
-    hb = ax.hexbin(
-        times,
-        phys,
-        gridsize=args.gridsize,
-        mincnt=1,
-        cmap="Blues",
-    )
+    hb = None
+    if args.plot == "hexbin":
+        hb = ax.hexbin(
+            times,
+            phys,
+            gridsize=args.gridsize,
+            mincnt=1,
+            cmap="Blues",
+            alpha=float(args.alpha),
+        )
+    else:
+        ax.scatter(
+            times,
+            phys,
+            s=float(args.s),
+            alpha=float(args.alpha),
+            c="#1f77b4",
+            linewidths=0,
+        )
 
     ax.set_title(args.title)
     ax.set_xlabel("Time (sec)")
@@ -155,30 +220,50 @@ def main() -> int:
         else:
             ax.set_ylim(addr_min, addr_max)
 
-    counts = hb.get_array()
-    if counts.size:
-        if args.vmax is not None:
-            vmax = float(args.vmax)
-        elif args.vmax_percentile is not None:
-            vmax = float(np.percentile(counts, float(args.vmax_percentile)))
+    # Optional: explicit y-limits override address-window bounds
+    if args.ymax_gb is not None:
+        if not args.y_offset:
+            raise SystemExit("--ymax-gb requires --y-offset (it sets an offset range [0, N GiB])")
+        ax.set_ylim(0, int(args.ymax_gb * (1024**3)))
+    elif args.ymin is not None or args.ymax is not None or args.ymin_gb is not None or args.yspan_gb is not None:
+        cur_lo, cur_hi = ax.get_ylim()
+        if args.ymin_gb is not None:
+            if not args.y_offset:
+                raise SystemExit("--ymin-gb requires --y-offset (it sets an offset minimum in GiB)")
+            lo = int(args.ymin_gb * (1024**3))
+        else:
+            lo = _parse_int_auto(args.ymin) if args.ymin is not None else int(cur_lo)
+        if args.yspan_gb is not None:
+            hi = lo + int(args.yspan_gb * (1024**3))
+        else:
+            hi = _parse_int_auto(args.ymax) if args.ymax is not None else int(cur_hi)
+        ax.set_ylim(lo, hi)
+
+    if hb is not None:
+        counts = hb.get_array()
+        if counts.size:
+            if args.vmax is not None:
+                vmax = float(args.vmax)
+            elif args.vmax_percentile is not None:
+                vmax = float(np.percentile(counts, float(args.vmax_percentile)))
+            else:
+                vmax = None
         else:
             vmax = None
-    else:
-        vmax = None
 
-    if args.color_scale == "log":
-        # LogNorm expects positive values; counts are >= 1 due to mincnt=1.
-        if vmax is not None and vmax >= 1:
-            hb.set_norm(LogNorm(vmin=1, vmax=vmax))
+        if args.color_scale == "log":
+            # LogNorm expects positive values; counts are >= 1 due to mincnt=1.
+            if vmax is not None and vmax >= 1:
+                hb.set_norm(LogNorm(vmin=1, vmax=vmax))
+            else:
+                hb.set_norm(LogNorm(vmin=1))
+            cbar = fig.colorbar(hb, ax=ax)
+            cbar.set_label("samples (log scale)")
         else:
-            hb.set_norm(LogNorm(vmin=1))
-        cbar = fig.colorbar(hb, ax=ax)
-        cbar.set_label("samples (log scale)")
-    else:
-        if vmax is not None and vmax > 0:
-            hb.set_clim(0, vmax)
-        cbar = fig.colorbar(hb, ax=ax)
-        cbar.set_label("samples")
+            if vmax is not None and vmax > 0:
+                hb.set_clim(0, vmax)
+            cbar = fig.colorbar(hb, ax=ax)
+            cbar.set_label("samples")
 
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
