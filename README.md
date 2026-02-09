@@ -1,6 +1,6 @@
-## memtis_ebpf_example
+## Workload-Profiling (perf/PEBS address sampling)
 
-This directory contains a **Zipf/Uniform page-access benchmark** plus a **perf/PEBS** workflow to collect **data-address samples** and analyze page hotness.
+This directory contains multiple **workload runners** plus a **perf/PEBS** workflow to collect **data-address samples** (`addr` / optionally `phys_addr`) and generate heatmaps / persistence plots.
 
 ### Prerequisites
 
@@ -17,6 +17,71 @@ From this directory:
 ```bash
 make
 ```
+
+### How to generate profiling results (per workload)
+
+All runners write results under `perf_results/<workload>_<timestamp>/` (this directory is **git-ignored**, so historical runs are kept locally and won't be committed).
+
+- **Zipf/Uniform synthetic benchmark**:
+
+```bash
+./run_zipf_profile.sh
+```
+
+- **Streaming benchmark**:
+
+```bash
+./run_stream_profile.sh
+```
+
+- **Liblinear (HIGGS / webspam, with stores)**:
+
+```bash
+DATASET=/data/xiayanwen/research/liblinear/liblinear-multicore-2.49/webspam_wc_normalized_trigram.svm \
+TRAIN_ARGS='-s 6 -m 80 -e 0.000001' \
+START_AFTER_RSS_GB=40 PERF_STOP_AFTER_SEC=300 WINDOW_GB=64 \
+./run_liblinear_profile.sh
+```
+
+- **NPB MG (Fortran OpenMP)**:
+
+```bash
+THREADS=32 CLASS=D DO_STORE=1 WINDOW_GB=64 ./run_npb_mg_profile.sh
+```
+
+- **NPB-CPP MG (C++ OpenMP)**:
+
+```bash
+THREADS=32 CLASS=D DO_STORE=1 WINDOW_GB=64 ./run_npb_cpp_mg_profile.sh
+```
+
+- **GAPBS (PR/BFS/SSSP)**:
+
+```bash
+./run_gapbs_pr_profile.sh
+./run_gapbs_bfs_profile.sh
+./run_gapbs_sssp_profile.sh
+```
+
+- **XGBoost**:
+
+```bash
+./run_xgboost_profile.sh
+```
+
+- **llama.cpp `llama-bench` (loads + stores, store-window plots)**:
+
+```bash
+LLAMA_DIR=/data/xiayanwen/research/llama.cpp \
+MODEL=/data/xiayanwen/research/llama.cpp/models/llama2_7b_chat_from_llama2c_f32.gguf \
+THREADS=32 PROMPT=256 GEN=256 REPS=1 \
+WINDOW_GB=64 ./run_llama_bench_profile.sh
+```
+
+Common knobs across runners:
+- `SAMPLE_PERIOD`: smaller => higher sampling rate (bigger `perf.data`)
+- `PERF_STOP_AFTER_SEC`: sample only the first N seconds (when supported)
+- `WINDOW_GB`: window size used for plotting
 
 ### Workflow A: Virtual-address heatmap (heap only)
 
@@ -123,6 +188,37 @@ Kill running profiler/benchmark:
 ```bash
 ./cleanup.sh
 ```
+
+### Liblinear profiling (loads + stores, store-window plots)
+
+This repo includes a liblinear runner that follows the `liblinear_initialized` / `liblinear_thrashed` gating used by the modified `train` binary, and records **both**:
+- `cpu/mem-loads/pp`
+- `cpu/mem-stores/pp`
+
+Runner:
+- `./run_liblinear_profile.sh`
+
+Useful knobs:
+- `DATASET=/path/to/dataset` (e.g. `.../webspam_wc_normalized_trigram.svm`)
+- `TRAIN_ARGS='-s 6 -m 80 -e 0.000001'`
+- `DO_STORE=1` (default on)
+- `PERF_STOP_AFTER_SEC=300` (sample only the first N seconds; benchmark continues)
+- `START_AFTER_RSS_GB=40` (start sampling only after RSS reaches N GiB)
+- `WINDOW_GB=64` (window size for plots)
+
+Outputs:
+- `virt_heatmap_load.png` (load-derived window)
+- `virt_heatmap_store.png` (store-derived window, when stores are enabled)
+- `virt_heatmap_load_in_store_window.png` (loads plotted in the store-derived window)
+
+### Store-window replotting (reusable)
+
+If a run directory has `points.txt` with store samples, you can regenerate comparable plots via:
+- `./replot_store_window.sh /abs/path/to/perf_results/<run_dir>`
+
+This produces:
+- `virt_heatmap_store_storewin.png`
+- `virt_heatmap_load_in_storewin.png`
 
 Also remove local artifacts (binaries, `*.data`, etc):
 

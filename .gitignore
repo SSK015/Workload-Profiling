@@ -51,6 +51,11 @@ perf_data.data
 test*.data*
 *.data
 
+# Local large datasets / scratch logs (keep out of git)
+data/
+bench_test.log
+stream_bench
+
 # Python cache
 __pycache__/
 *.pyc

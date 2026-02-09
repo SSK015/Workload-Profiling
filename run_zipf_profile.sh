@@ -26,6 +26,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
+if [ -f "$ROOT_DIR/perf_utils.sh" ]; then
+  source "$ROOT_DIR/perf_utils.sh"
+fi
+
 # ===== Config (override via env) =====
 MEM_SIZE_MB=${MEM_SIZE_MB:-1024}
 SKEW=${SKEW:-0.99}                   # 0.99 Zipfian, 0.0 uniform
@@ -159,11 +163,19 @@ echo "=== perf record (PEBS data addr) ==="
 PERF_DATA="$OUT_DIR/perf.data"
 rm -f "$PERF_DATA" 2>/dev/null || true
 
+# Auto-detect best perf parameters for the current environment
+if command -v detect_perf_params >/dev/null 2>&1; then
+  detect_perf_params "$BENCH_PID"
+else
+  PERF_EVENT_STR="cpu/mem-loads/pp"
+  PERF_TARGET_FLAGS="-a"
+fi
+
 if [ "$PERF_UNTIL_EXIT" = "1" ]; then
   "$PERF_BIN" record \
-    -e "{cpu/mem-loads-aux/,cpu/mem-loads/pp}:${PERF_EVENT_MOD}" \
+    -e "$PERF_EVENT_STR" \
     -c "$SAMPLE_PERIOD" \
-    -p "$BENCH_PID" \
+    $PERF_TARGET_FLAGS \
     -d \
     --no-buildid --no-buildid-cache \
     -o "$PERF_DATA" \
@@ -174,9 +186,9 @@ if [ "$PERF_UNTIL_EXIT" = "1" ]; then
   wait "$PERF_REC_PID" 2>/dev/null || true
 else
   "$PERF_BIN" record \
-    -e "{cpu/mem-loads-aux/,cpu/mem-loads/pp}:${PERF_EVENT_MOD}" \
+    -e "$PERF_EVENT_STR" \
     -c "$SAMPLE_PERIOD" \
-    -p "$BENCH_PID" \
+    $PERF_TARGET_FLAGS \
     -d \
     --no-buildid --no-buildid-cache \
     -o "$PERF_DATA" \

@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--input", required=True, help="Input file (time event phys_addr)")
     p.add_argument("--output", required=True, help="Output PNG path")
     p.add_argument("--title", default="GUPS", help="Plot title")
+    p.add_argument("--xlabel", default="Time (sec)", help="X axis label")
     p.add_argument("--event-filter", default="cpu/mem-loads/pp", help="Only keep matching event")
     p.add_argument("--ylabel", default="Physical address", help="Y axis label")
     p.add_argument("--addr-min", default=None, help="Filter: keep addresses >= this hex (e.g. 0x7000...)")
@@ -208,7 +209,7 @@ def main() -> int:
         )
 
     ax.set_title(args.title)
-    ax.set_xlabel("Time (sec)")
+    ax.set_xlabel(args.xlabel)
     ax.set_ylabel(args.ylabel)
 
     # Force Y axis bounds when the user provided an address window, so the plot

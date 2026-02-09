@@ -8,19 +8,24 @@
 #     ./run_stream_profile.sh
 #
 
-# Optional: load sudo password helper if available (used for sysctl tuning)
-SCRIPT_LIB_DIR="${SCRIPT_LIB_DIR:-/mnt/nfs/xiayanwen/research/demos/scripts}"
-if [ -f "${SCRIPT_LIB_DIR}/password_lib.sh" ]; then
-  # shellcheck disable=SC1090
-  source "${SCRIPT_LIB_DIR}/password_lib.sh"
-  define_user_password
-  export SUDO_PASS="${USER_PASSWORD:-}"
-fi
+# Optional: load sudo password helper if available (used for sysctl tuning).
+# If you don't have this helper, just export SUDO_PASS yourself when needed.
+# SCRIPT_LIB_DIR="${SCRIPT_LIB_DIR:-/mnt/nfs/xiayanwen/research/demos/scripts}"
+# if [ -f "${SCRIPT_LIB_DIR}/password_lib.sh" ]; then
+#   # shellcheck disable=SC1090
+#   source "${SCRIPT_LIB_DIR}/password_lib.sh"
+#   define_user_password
+#   export SUDO_PASS="${USER_PASSWORD:-}"
+# fi
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
+
+if [ -f "$ROOT_DIR/perf_utils.sh" ]; then
+  source "$ROOT_DIR/perf_utils.sh"
+fi
 
 # ===== Helpers =====
 detect_nproc() {
@@ -244,12 +249,20 @@ echo "=== perf record (PEBS data addr) ==="
 PERF_DATA="$OUT_DIR/perf.data"
 rm -f "$PERF_DATA" 2>/dev/null || true
 
+# Auto-detect best perf parameters for the current environment
+if command -v detect_perf_params >/dev/null 2>&1; then
+  detect_perf_params "$BENCH_PID"
+else
+  PERF_EVENT_STR="cpu/mem-loads/pp"
+  PERF_TARGET_FLAGS="-p $BENCH_PID"
+fi
+
 if [ "$PERF_UNTIL_EXIT" = "1" ]; then
   echo "Sampling mode: until benchmark exits (PERF_UNTIL_EXIT=1)"
   "$PERF_BIN" record \
-    -e "{cpu/mem-loads-aux/,cpu/mem-loads/pp}:${PERF_EVENT_MOD}" \
+    -e "$PERF_EVENT_STR" \
     -c "$SAMPLE_PERIOD" \
-    -p "$BENCH_PID" \
+    $PERF_TARGET_FLAGS \
     -d \
     --no-buildid --no-buildid-cache \
     -o "$PERF_DATA" \
@@ -261,9 +274,9 @@ if [ "$PERF_UNTIL_EXIT" = "1" ]; then
 else
   echo "Sampling mode: fixed duration ${PERF_DURATION}s"
   "$PERF_BIN" record \
-    -e "{cpu/mem-loads-aux/,cpu/mem-loads/pp}:${PERF_EVENT_MOD}" \
+    -e "$PERF_EVENT_STR" \
     -c "$SAMPLE_PERIOD" \
-    -p "$BENCH_PID" \
+    $PERF_TARGET_FLAGS \
     -d \
     --no-buildid --no-buildid-cache \
     -o "$PERF_DATA" \
