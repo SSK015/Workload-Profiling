@@ -63,6 +63,47 @@ THREADS=32 CLASS=D DO_STORE=1 WINDOW_GB=64 ./run_npb_cpp_mg_profile.sh
 ./run_gapbs_sssp_profile.sh
 ```
 
+- **GAPBS suite (uniform synthetic graph, big memory ~20–50GiB RSS, loads+stores + store-window plots)**:
+
+This runs a few representative algorithms (default: `bfs pr sssp cc`) on a GAPBS-generated **uniform** graph sized to hit a target RSS, waits until RSS crosses a threshold, then samples and plots.
+
+```bash
+GAPBS_DIR=/home/xiayanwen/app-case-studies/memtis/memtis-userspace/bench_dir/gapbs \
+TARGET_RSS_GB=30 START_AFTER_RSS_GB=25 DEGREE=16 THREADS=32 \
+PERF_STOP_AFTER_SEC=180 SAMPLE_PERIOD=20000 WINDOW_GB=64 \
+  ./run_gapbs_suite_uniform_bigmem_profile.sh
+```
+
+Outputs go under `perf_results/gapbs_uniform_bigmem_*/<alg>/` and include:
+- `points.txt`
+- `rss_summary.txt`
+- `virt_heatmap_store_storewin.png`
+- `virt_heatmap_load_in_storewin.png`
+
+- **GAPBS suite (real dataset graph file, big memory ~20–50GiB RSS, loads+stores + store-window plots)**:
+
+Point `GRAPH_SG` (for `bfs/pr/cc`) and `GRAPH_WSG` (for `sssp`) to real graph files you already have, then the script will run the same representative algorithms and sample after the RSS threshold.
+
+```bash
+GRAPH_SG=/abs/path/to/your/big_graph.sg \
+GRAPH_WSG=/abs/path/to/your/big_graph.wsg \
+START_AFTER_RSS_GB=30 PERF_STOP_AFTER_SEC=180 SAMPLE_PERIOD=20000 WINDOW_GB=64 \
+  ./run_gapbs_suite_real_graph_bigmem_profile.sh
+```
+
+Outputs go under `perf_results/gapbs_real_bigmem_*/<alg>/`.
+
+- **Dataset helper: SNAP com-friendster**:
+
+This repo includes a helper that downloads SNAP `com-friendster` and converts it to both formats:
+- `com-friendster.sg` (for `bfs/pr/cc`)
+- `com-friendster.wsg` (for `sssp`)
+
+```bash
+./prepare_gapbs_com_friendster.sh
+```
+
+
 - **XGBoost**:
 
 ```bash
@@ -76,6 +117,30 @@ LLAMA_DIR=/data/xiayanwen/research/llama.cpp \
 MODEL=/data/xiayanwen/research/llama.cpp/models/llama2_7b_chat_from_llama2c_f32.gguf \
 THREADS=32 PROMPT=256 GEN=256 REPS=1 \
 WINDOW_GB=64 ./run_llama_bench_profile.sh
+```
+
+- **AIFM DataFrame (pure Linux “All in memory”, ~31GiB working set)**:
+
+One-time input prep (downloads ~16GB NYC taxi CSVs, builds `all.csv`):
+
+```bash
+DATA_DIR=/data/xiayanwen/research/Workload-Profiling/data/aifm_dataframe \
+  ./prepare_aifm_dataframe_input.sh
+```
+
+Note: the original AIFM artifact uses legacy CSV URLs that may now return HTTP 403. This repo’s input prep script falls back to the current TLC **parquet** endpoints and converts them into a legacy-shaped CSV; since the parquet schema no longer includes longitude/latitude, it **synthesizes** `pickup_*`/`dropoff_*` lon/lat from location IDs so the original `DataFrame/original/app/main.cc` workload can run unchanged.
+
+If your peak RSS is below the ~31GiB target, you can scale the dataset by adding more months during input prep, e.g.:
+
+```bash
+EXTRA_MONTHS="2016-07" FORCE_REBUILD=1 ./prepare_aifm_dataframe_input.sh
+```
+
+Run + profile (loads+stores) + plot store-window heatmaps:
+
+```bash
+SAMPLE_PERIOD=20000 WINDOW_GB=32 AUTO_PAD=1 TITLE_MODE=simple \
+  ./run_aifm_dataframe_linux_profile.sh
 ```
 
 Common knobs across runners:
@@ -317,3 +382,31 @@ Common knobs:
 Note: `sssp` requires a **weighted** graph. If you pass an unweighted serialized `.sg` (like `twitter.sg`), the script will automatically convert it once to an edge list (`.el`) under `perf_results/gapbs_sssp/` and let GAPBS insert weights during graph build.
 
 
+## VoltDB profiling (Voter sample application)
+
+**What is it?**
+- **VoltDB** is an in-memory OLTP (transactional) relational database.
+- The **Voter** sample application simulates a phone/SMS voting workload: many clients issue short stored-procedure transactions (“cast vote”, “contestant lookup”, etc.).
+- It’s a good representative “DB application” workload: indexing, procedure execution, logging, heap allocation/GC, and lots of memory traffic.
+
+**How to run (Linux only):**
+
+This repo does not vendor VoltDB. Provide a VoltDB distribution locally:
+
+- If you already extracted it:
+
+```bash
+VOLTDB_HOME=/abs/path/to/voltdb ./run_voltdb_voter_linux_profile.sh
+```
+
+- If you have a tarball:
+
+```bash
+VOLTDB_TARBALL=/abs/path/to/voltdb-*.tar.gz ./run_voltdb_voter_linux_profile.sh
+```
+
+Common knobs:
+- `HEAP_GB=16` (JVM heap target; best-effort)
+- `THREADS=32`
+- `START_AFTER_RSS_GB=8` (RSS gate before starting perf sampling)
+- `PERF_STOP_AFTER_SEC=180` and `SAMPLE_PERIOD=20000`Outputs are written under `perf_results/voltdb_voter_*` and include `perf.data`, `points.txt`, and the two store/load heatmaps.

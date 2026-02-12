@@ -46,6 +46,21 @@ def main() -> int:
         ev = parts[3].rstrip(b":")
         addr = parts[4]
 
+        # Drop invalid/zero addresses early.
+        if addr == b"0" or addr == b"0x0":
+            continue
+        # Drop kernel-space canonical addresses by default. When we run perf system-wide (-a),
+        # samples can include high-half addresses which would dominate window selection and plots.
+        # User-space on x86_64 is below 0x00008000_0000_0000 (canonical split).
+        try:
+            a = int(addr, 16)
+        except ValueError:
+            continue
+        if a == 0:
+            continue
+        if a >= 0x8000_0000_0000_0000:
+            continue
+
         # Emit as: "<time>: <event>: <addr>\n" (matches plot_phys_addr.py LINE_RE)
         out.write(t)
         out.write(b": ")

@@ -27,6 +27,8 @@ WINDOW_GB="${WINDOW_GB:-64}"
 WINDOW_STRATEGY="${WINDOW_STRATEGY:-best}"
 PERF_EVENT_LOAD="${PERF_EVENT_LOAD:-cpu/mem-loads/pp}"
 PERF_EVENT_STORE="${PERF_EVENT_STORE:-cpu/mem-stores/pp}"
+DROP_TOP_BUCKETS="${DROP_TOP_BUCKETS:-0}"
+MIN_BUCKET_SAMPLES="${MIN_BUCKET_SAMPLES:-1000}"
 
 # Optional: expand the store-derived window by padding (GiB) to avoid clipping
 # loads/stores that sit just outside the inferred store window.
@@ -47,6 +49,19 @@ HEATMAP_GRIDSIZE="${HEATMAP_GRIDSIZE:-120}"
 HEATMAP_FIGSIZE="${HEATMAP_FIGSIZE:-10,5}"
 HEATMAP_COLOR_SCALE="${HEATMAP_COLOR_SCALE:-log}"
 HEATMAP_VMAX_PCT="${HEATMAP_VMAX_PCT:-99.9}"
+
+# Auto-adjust y-axis limits to avoid large empty regions (useful when AUTO_PAD expands the window).
+# NOTE: this only works if we do NOT force --ymax-gb to the full padded span.
+AUTO_YLIM="${AUTO_YLIM:-1}"
+AUTO_YLIM_LO_PCT="${AUTO_YLIM_LO_PCT:-0.1}"
+AUTO_YLIM_HI_PCT="${AUTO_YLIM_HI_PCT:-99.9}"
+AUTO_YLIM_PAD_GB="${AUTO_YLIM_PAD_GB:-0.5}"
+
+# Manual y-axis override (GiB offset, requires --y-offset which we always use here).
+# Example: YMIN_GB=0 YMAX_GB=48 ./replot_store_window.sh <out_dir>
+YMIN_GB="${YMIN_GB:-}"
+YMAX_GB="${YMAX_GB:-}"
+YSPAN_GB="${YSPAN_GB:-}"
 
 # Plot title mode:
 # - full: include window description suffixes (legacy behavior)
@@ -72,6 +87,8 @@ LOAD_WIN="$OUT_DIR/load_window_${WINDOW_GB}g.txt"
 set +e
 python3 "$ROOT_DIR/infer_addr_range.py" \
   --event "$PERF_EVENT_STORE" \
+  --drop-top-buckets "$DROP_TOP_BUCKETS" \
+  --min-bucket-samples "$MIN_BUCKET_SAMPLES" \
   --mode window --window-gb "$WINDOW_GB" --window-strategy "$WINDOW_STRATEGY" --window-output full \
   --max-lines 200000 < "$POINTS" > "$STORE_WIN"
 rc=$?
@@ -84,6 +101,8 @@ fi
 
 python3 "$ROOT_DIR/infer_addr_range.py" \
   --event "$PERF_EVENT_LOAD" \
+  --drop-top-buckets "$DROP_TOP_BUCKETS" \
+  --min-bucket-samples "$MIN_BUCKET_SAMPLES" \
   --mode window --window-gb "$WINDOW_GB" --window-strategy "$WINDOW_STRATEGY" --window-output full \
   --max-lines 200000 < "$POINTS" > "$LOAD_WIN" || true
 
@@ -194,9 +213,25 @@ else
   LOAD_TITLE="${BASE_TITLE} (loads, in store-window)"
 fi
 
-PLOT_ARGS_COMMON=(--input "$POINTS" --xlabel "Wall time (sec)" --addr-min "$STORE_MIN_PAD" --addr-max "$STORE_MAX_PAD" --y-offset --ymax-gb "$SPAN_GB" --max-points "$MAX_POINTS" --dpi "$HEATMAP_DPI" --gridsize "$HEATMAP_GRIDSIZE" --figsize "$HEATMAP_FIGSIZE" --color-scale "$HEATMAP_COLOR_SCALE" --ylabel "Virtual address (GiB offset)")
+PLOT_ARGS_COMMON=(--input "$POINTS" --xlabel "Wall time (sec)" --addr-min "$STORE_MIN_PAD" --addr-max "$STORE_MAX_PAD" --y-offset --max-points "$MAX_POINTS" --dpi "$HEATMAP_DPI" --gridsize "$HEATMAP_GRIDSIZE" --figsize "$HEATMAP_FIGSIZE" --color-scale "$HEATMAP_COLOR_SCALE" --ylabel "Virtual address (GiB offset)")
 if [ -n "$HEATMAP_VMAX_PCT" ]; then
   PLOT_ARGS_COMMON+=(--vmax-percentile "$HEATMAP_VMAX_PCT")
+fi
+if [ "$AUTO_YLIM" = "1" ]; then
+  PLOT_ARGS_COMMON+=(--auto-ylim --auto-ylim-lo-pct "$AUTO_YLIM_LO_PCT" --auto-ylim-hi-pct "$AUTO_YLIM_HI_PCT" --auto-ylim-pad-gb "$AUTO_YLIM_PAD_GB")
+fi
+if [ -n "${YMIN_GB}" ]; then
+  PLOT_ARGS_COMMON+=(--ymin-gb "$YMIN_GB")
+fi
+if [ -n "${YSPAN_GB}" ]; then
+  PLOT_ARGS_COMMON+=(--yspan-gb "$YSPAN_GB")
+fi
+if [ -n "${YMAX_GB}" ]; then
+  PLOT_ARGS_COMMON+=(--ymax-gb "$YMAX_GB")
+fi
+# Preserve legacy behavior (show full padded span) when AUTO_YLIM=0 and no manual bounds were requested.
+if [ "$AUTO_YLIM" != "1" ] && [ -z "${YMIN_GB}${YSPAN_GB}${YMAX_GB}" ]; then
+  PLOT_ARGS_COMMON+=(--ymax-gb "$SPAN_GB")
 fi
 
 python3 "$ROOT_DIR/plot_phys_addr.py" \

@@ -22,6 +22,7 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LogNorm
+from matplotlib.ticker import FuncFormatter
 
 
 # perf script -F time,event,addr (or phys_addr) often formats like:
@@ -43,6 +44,30 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--addr-min", default=None, help="Filter: keep addresses >= this hex (e.g. 0x7000...)")
     p.add_argument("--addr-max", default=None, help="Filter: keep addresses < this hex (e.g. 0x7000...)")
     p.add_argument("--y-offset", action="store_true", help="Plot Y as (addr - addr_min) if addr_min is set")
+    p.add_argument(
+        "--auto-ylim",
+        action="store_true",
+        help="Auto-adjust y-axis limits to the dense address region (based on sample percentiles), "
+        "clamped within the addr window if provided.",
+    )
+    p.add_argument(
+        "--auto-ylim-lo-pct",
+        type=float,
+        default=0.1,
+        help="Lower percentile for --auto-ylim (default: 0.1).",
+    )
+    p.add_argument(
+        "--auto-ylim-hi-pct",
+        type=float,
+        default=99.9,
+        help="Upper percentile for --auto-ylim (default: 99.9).",
+    )
+    p.add_argument(
+        "--auto-ylim-pad-gb",
+        type=float,
+        default=0.5,
+        help="Padding (GiB) added to auto y-limits (default: 0.5 GiB). GiB = 1024^3.",
+    )
     p.add_argument(
         "--ymin",
         default=None,
@@ -123,6 +148,14 @@ def _parse_int_auto(s: str) -> int:
     if s.startswith("0x"):
         return int(s, 16)
     return int(s, 10)
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
 
 
 def main() -> int:
@@ -212,14 +245,61 @@ def main() -> int:
     ax.set_xlabel(args.xlabel)
     ax.set_ylabel(args.ylabel)
 
-    # Force Y axis bounds when the user provided an address window, so the plot
-    # reflects the full requested span (e.g., WINDOW_GB), even if samples only
-    # touch a subset of that window.
+    # In --y-offset mode we keep data in bytes (so all filtering/limits remain
+    # consistent), but we format ticks in GiB to match the default label used by
+    # replot_store_window.sh ("Virtual address (GiB offset)").
+    if args.y_offset:
+        gib = float(1024**3)
+
+        def _fmt_gib(v: float, _pos: int) -> str:
+            return f"{v / gib:.2f}"
+
+        ax.yaxis.set_major_formatter(FuncFormatter(_fmt_gib))
+        # Hide Matplotlib's scientific offset text (e.g. "1e9") which is confusing
+        # when we want explicit GiB labels.
+        ax.yaxis.get_offset_text().set_visible(False)
+
+    # If the user provided an address window, default to showing the full span
+    # (legacy behavior). If --auto-ylim is set, we will tighten this later while
+    # clamping within the same window.
+    base_lo = None
+    base_hi = None
     if addr_min is not None and addr_max is not None:
         if args.y_offset:
-            ax.set_ylim(0, addr_max - addr_min)
+            base_lo, base_hi = 0.0, float(addr_max - addr_min)
         else:
-            ax.set_ylim(addr_min, addr_max)
+            base_lo, base_hi = float(addr_min), float(addr_max)
+        ax.set_ylim(base_lo, base_hi)
+
+    # Optional: automatically tighten y-limits to the dense region, to avoid
+    # large empty space when the window is intentionally padded.
+    if args.auto_ylim:
+        y = np.asarray(phys, dtype=np.float64)
+        if y.size:
+            lo_pct = float(args.auto_ylim_lo_pct)
+            hi_pct = float(args.auto_ylim_hi_pct)
+            if not (0.0 <= lo_pct < hi_pct <= 100.0):
+                raise SystemExit("--auto-ylim requires 0 <= lo_pct < hi_pct <= 100")
+            y_lo = float(np.percentile(y, lo_pct))
+            y_hi = float(np.percentile(y, hi_pct))
+            pad = float(args.auto_ylim_pad_gb) * (1024.0**3)
+            # Ensure a sane span even if percentiles collapse.
+            if y_hi <= y_lo:
+                y_lo = float(np.min(y))
+                y_hi = float(np.max(y))
+            y_lo -= pad
+            y_hi += pad
+            # Clamp within provided window if any; otherwise keep non-negative
+            # in offset mode.
+            if base_lo is not None and base_hi is not None:
+                y_lo = _clamp(y_lo, base_lo, base_hi)
+                y_hi = _clamp(y_hi, base_lo, base_hi)
+            elif args.y_offset:
+                y_lo = max(0.0, y_lo)
+            # Avoid zero-height range.
+            if y_hi <= y_lo:
+                y_hi = y_lo + 1.0
+            ax.set_ylim(y_lo, y_hi)
 
     # Optional: explicit y-limits override address-window bounds
     if args.ymax_gb is not None:

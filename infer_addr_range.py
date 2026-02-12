@@ -48,6 +48,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep kernel-space virtual addresses (>= 0x8000...). Default is to drop them to avoid huge address spans.",
     )
+    p.add_argument(
+        "--drop-top-buckets",
+        type=int,
+        default=0,
+        help=(
+            "Drop this many highest-address buckets before selecting dominant/window. "
+            "Useful to ignore the stack/vdso region when it dominates samples."
+        ),
+    )
     return p.parse_args()
 
 
@@ -96,6 +105,16 @@ def main() -> int:
 
     if not counts:
         return 1
+
+    # Optional: drop highest-address buckets (often stack/vdso/vvar buckets).
+    dt = int(getattr(args, "drop_top_buckets", 0) or 0)
+    if dt > 0 and len(counts) > dt:
+        for b in sorted(counts.keys(), reverse=True)[:dt]:
+            counts.pop(b, None)
+            mins.pop(b, None)
+            maxs.pop(b, None)
+        if not counts:
+            return 1
 
     # Filter out tiny outlier buckets if requested (only affects window selection).
     if args.mode == "window" and args.min_bucket_samples > 0:
