@@ -54,8 +54,8 @@ GRAPH="${GRAPH:-}"
 GRAPH_SG="${GRAPH_SG:-}"
 GRAPH_WSG="${GRAPH_WSG:-}"
 
-# Algorithms to run (space-separated): bfs pr sssp cc tc
-ALGS="${ALGS:-bfs pr sssp cc}"
+# Algorithms to run (space-separated): bc bfs pr sssp cc tc
+ALGS="${ALGS:-bfs pr sssp cc bc}"
 
 # Threads (passed via OpenMP env, if GAPBS build uses it)
 THREADS="${THREADS:-$(detect_nproc)}"
@@ -69,6 +69,8 @@ SSSP_TRIALS="${SSSP_TRIALS:-16}"
 SSSP_DELTA="${SSSP_DELTA:-1}"
 CC_ITERS="${CC_ITERS:-5}"
 TC_TRIALS="${TC_TRIALS:-16}"
+BC_ITERS="${BC_ITERS:-1}"
+BC_TRIALS="${BC_TRIALS:-16}"
 
 # perf sampling
 PERF_BIN="${PERF_BIN:-perf}"
@@ -202,13 +204,14 @@ run_one() {
 
   local args=()
   case "$alg" in
+    bc)   args=( -f "$graph_for_alg" -n "$BC_TRIALS" -i "$BC_ITERS" -l ) ;;
     bfs)  args=( -f "$graph_for_alg" -n "$BFS_ITERS" ) ;;
     pr)   args=( -f "$graph_for_alg" -i "$PR_MAX_ITERS" -t "$PR_TOL" -n "$PR_TRIALS" ) ;;
     sssp) args=( -f "$graph_for_alg" -n "$SSSP_TRIALS" -d "$SSSP_DELTA" -l ) ;;
     cc)   args=( -f "$graph_for_alg" -n "$CC_ITERS" ) ;;
     tc)   args=( -f "$graph_for_alg" -n "$TC_TRIALS" ) ;;
     *)
-      echo "ERROR: unknown alg: $alg (supported: bfs pr sssp cc tc)" >&2
+      echo "ERROR: unknown alg: $alg (supported: bc bfs pr sssp cc tc)" >&2
       return 2
       ;;
   esac
