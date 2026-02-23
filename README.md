@@ -382,9 +382,7 @@ Common knobs:
 Note: `sssp` requires a **weighted** graph. If you pass an unweighted serialized `.sg` (like `twitter.sg`), the script will automatically convert it once to an edge list (`.el`) under `perf_results/gapbs_sssp/` and let GAPBS insert weights during graph build.
 
 
-## VoltDB profiling (Voter sample application)
-
-**What is it?**
+## VoltDB profiling (Voter sample application)**What is it?**
 - **VoltDB** is an in-memory OLTP (transactional) relational database.
 - The **Voter** sample application simulates a phone/SMS voting workload: many clients issue short stored-procedure transactions (“cast vote”, “contestant lookup”, etc.).
 - It’s a good representative “DB application” workload: indexing, procedure execution, logging, heap allocation/GC, and lots of memory traffic.
@@ -403,9 +401,7 @@ VOLTDB_HOME=/abs/path/to/voltdb ./run_voltdb_voter_linux_profile.sh
 
 ```bash
 VOLTDB_TARBALL=/abs/path/to/voltdb-*.tar.gz ./run_voltdb_voter_linux_profile.sh
-```
-
-Common knobs:
+```Common knobs:
 - `HEAP_GB=16` (JVM heap target; best-effort)
 - `THREADS=32`
 - `START_AFTER_RSS_GB=8` (RSS gate before starting perf sampling)

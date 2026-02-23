@@ -43,6 +43,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ylabel", default="Physical address", help="Y axis label")
     p.add_argument("--addr-min", default=None, help="Filter: keep addresses >= this hex (e.g. 0x7000...)")
     p.add_argument("--addr-max", default=None, help="Filter: keep addresses < this hex (e.g. 0x7000...)")
+    p.add_argument(
+        "--time-zero",
+        type=float,
+        default=None,
+        help="Optional: absolute perf-script timestamp to use as t=0 for this plot. "
+        "If omitted, t=0 is the first sample seen for the chosen event (legacy behavior).",
+    )
+    p.add_argument(
+        "--xmin-sec",
+        type=float,
+        default=None,
+        help="Optional: force x-axis minimum (seconds, relative to time-zero).",
+    )
+    p.add_argument(
+        "--xmax-sec",
+        type=float,
+        default=None,
+        help="Optional: force x-axis maximum (seconds, relative to time-zero).",
+    )
     p.add_argument("--y-offset", action="store_true", help="Plot Y as (addr - addr_min) if addr_min is set")
     p.add_argument(
         "--auto-ylim",
@@ -182,8 +201,12 @@ def main() -> int:
             if ev != args.event_filter:
                 continue
             t = float(m.group("time"))
-            if t0 is None:
-                t0 = t
+            if args.time_zero is None:
+                if t0 is None:
+                    t0 = t
+                t_rel = t - t0
+            else:
+                t_rel = t - float(args.time_zero)
             pa = int(m.group("addr"), 16)
             if pa == 0:
                 continue
@@ -191,8 +214,6 @@ def main() -> int:
                 continue
             if addr_max is not None and pa >= addr_max:
                 continue
-            # Normalize time as we read (perf script times are monotonic)
-            t_rel = t - t0
             n_seen += 1
 
             # Stream downsample with reservoir sampling capped at max_points
@@ -244,6 +265,12 @@ def main() -> int:
     ax.set_title(args.title)
     ax.set_xlabel(args.xlabel)
     ax.set_ylabel(args.ylabel)
+
+    # Optional explicit x-limits (useful to make multiple plots comparable)
+    if args.xmin_sec is not None or args.xmax_sec is not None:
+        xmin = float(args.xmin_sec) if args.xmin_sec is not None else float(np.min(times))
+        xmax = float(args.xmax_sec) if args.xmax_sec is not None else float(np.max(times))
+        ax.set_xlim(xmin, xmax)
 
     # In --y-offset mode we keep data in bytes (so all filtering/limits remain
     # consistent), but we format ticks in GiB to match the default label used by

@@ -57,6 +57,10 @@ AUTO_YLIM_LO_PCT="${AUTO_YLIM_LO_PCT:-0.1}"
 AUTO_YLIM_HI_PCT="${AUTO_YLIM_HI_PCT:-99.9}"
 AUTO_YLIM_PAD_GB="${AUTO_YLIM_PAD_GB:-0.5}"
 
+# Optional: force both store/load plots to use the same x-axis range by
+# aligning time-zero and x-limits across events.
+SYNC_XLIM="${SYNC_XLIM:-0}"
+
 # Manual y-axis override (GiB offset, requires --y-offset which we always use here).
 # Example: YMIN_GB=0 YMAX_GB=48 ./replot_store_window.sh <out_dir>
 YMIN_GB="${YMIN_GB:-}"
@@ -232,6 +236,56 @@ fi
 # Preserve legacy behavior (show full padded span) when AUTO_YLIM=0 and no manual bounds were requested.
 if [ "$AUTO_YLIM" != "1" ] && [ -z "${YMIN_GB}${YSPAN_GB}${YMAX_GB}" ]; then
   PLOT_ARGS_COMMON+=(--ymax-gb "$SPAN_GB")
+fi
+
+if [ "$SYNC_XLIM" = "1" ]; then
+  # Use the union time span of load+store samples (within the addr window) so
+  # both plots share the same x-range.
+  read -r T_MIN_ABS T_MAX_ABS < <(
+    python3 - <<PY
+import re
+import math
+
+points = "$POINTS"
+evs = {"$PERF_EVENT_STORE", "$PERF_EVENT_LOAD"}
+lo = int("$STORE_MIN_PAD", 16)
+hi = int("$STORE_MAX_PAD", 16)
+line_re = re.compile(r"^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*:?.*?\\s+(\\S+?)\\s*:?.*?\\s+([0-9a-fA-F]+)\\s*$")
+
+tmin = None
+tmax = None
+with open(points, "r", encoding="utf-8", errors="ignore") as f:
+    for line in f:
+        m = line_re.match(line)
+        if not m:
+            continue
+        t = float(m.group(1))
+        ev = m.group(2).rstrip(":")
+        if ev not in evs:
+            continue
+        a = int(m.group(3), 16)
+        if a == 0 or a >= 0x8000_0000_0000_0000:
+            continue
+        if a < lo or a >= hi:
+            continue
+        if tmin is None or t < tmin:
+            tmin = t
+        if tmax is None or t > tmax:
+            tmax = t
+
+if tmin is None or tmax is None:
+    print("0 0")
+else:
+    print(f"{tmin} {tmax}")
+PY
+  )
+  if [ "$T_MIN_ABS" != "0" ] && [ "$T_MAX_ABS" != "0" ]; then
+    XMAX_SEC=$(python3 - <<PY
+print(float("$T_MAX_ABS") - float("$T_MIN_ABS"))
+PY
+)
+    PLOT_ARGS_COMMON+=(--time-zero "$T_MIN_ABS" --xmin-sec 0 --xmax-sec "$XMAX_SEC")
+  fi
 fi
 
 python3 "$ROOT_DIR/plot_phys_addr.py" \
